@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { generateMockDailySummary } from "@/lib/mock";
 import { toCsvRows } from "@/lib/csv";
-import { fetchCalendarSummary, fetchDailyClockRecords, fetchPlannedSubsidiary } from "@/lib/fluida";
+import { fetchCalendarSummary, fetchContracts, fetchDailyClockRecords, fetchPlannedSubsidiary } from "@/lib/fluida";
 
 export async function GET(request: NextRequest) {
   const auth = await requireUser(request);
@@ -32,6 +32,39 @@ export async function GET(request: NextRequest) {
 
     if (!result || result.length === 0) {
       return NextResponse.json({ error: "Nessun dato trovato" }, { status: 404 });
+    }
+
+    const contractNameMap = new Map<string, string>();
+    const needsContractNames = result.some((c) => {
+      const name =
+        (c.user_name as string) ||
+        (c.user_full_name as string) ||
+        (c.user as string) ||
+        (c.employee_name as string) ||
+        (c.employee_full_name as string) ||
+        (c.employee as string) ||
+        (c.contract_name as string) ||
+        (c.name as string) ||
+        "";
+      const contractId = (c.contract_id as string) || (c.contractId as string) || (c.contract as string) || "";
+      return !name && !!contractId;
+    });
+
+    if (needsContractNames) {
+      try {
+        const contracts = await fetchContracts({ page_size: 200 });
+        for (const it of contracts as Array<Record<string, unknown>>) {
+          const id = (it.id as string) || (it.contract_id as string) || (it.contractId as string) || "";
+          if (!id) continue;
+          const fn = (it.first_name as string) || (it.firstname as string) || (it.user_firstname as string) || (it.user_first_name as string) || "";
+          const ln = (it.last_name as string) || (it.lastname as string) || (it.user_lastname as string) || (it.user_last_name as string) || "";
+          const full = `${fn} ${ln}`.trim();
+          const fallback = (it.name as string) || (it.surname as string) || "";
+          contractNameMap.set(id, full || fallback);
+        }
+      } catch {
+        // ignore contract lookup failures
+      }
     }
 
     let plannedInfo: Record<string, { shift: string; location: string }> = {};
@@ -132,13 +165,18 @@ export async function GET(request: NextRequest) {
       let personName =
         (c.user_name as string) ||
         (c.user_full_name as string) ||
+        (c.user as string) ||
         (c.employee_name as string) ||
+        (c.employee_full_name as string) ||
         (c.employee as string) ||
         (c.contract_name as string) ||
         (c.name as string) ||
         "";
       const total = (c.total_duration as number) || (c.totalDuration as number) || 0;
       const contractId = (c.contract_id as string) || (c.contractId as string) || (c.contract as string) || "";
+      if (!personName && contractId && contractNameMap.has(contractId)) {
+        personName = contractNameMap.get(contractId) || "";
+      }
       const days = Array.isArray(c.days) ? (c.days as Array<Record<string, unknown>>) : [];
       if (days.length === 0) {
         entriesOut.push({
@@ -192,6 +230,9 @@ export async function GET(request: NextRequest) {
               const full = `${fn} ${ln}`.trim();
               personName = full || (r.user as string) || (r.user_name as string) || "";
             }
+          }
+          if (!personName && contractId && contractNameMap.has(contractId)) {
+            personName = contractNameMap.get(contractId) || "";
           }
 
           const info = plannedInfo[key] || { shift: "", location: "" };
