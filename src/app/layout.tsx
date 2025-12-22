@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { IBM_Plex_Sans, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
+import { AuthGate } from "./auth-gate";
 
 const bodyFont = IBM_Plex_Sans({
   variable: "--font-body",
@@ -28,7 +29,9 @@ export default function RootLayout({
   return (
     <html lang="it">
       <body className={`${bodyFont.variable} ${displayFont.variable}`}>
-        <Providers>{children}</Providers>
+        <Providers>
+          <AuthGate>{children}</AuthGate>
+        </Providers>
       </body>
     </html>
   );

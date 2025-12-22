@@ -8,6 +8,134 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+enum SystemRoleKey {
+  PLATFORM_SUPER_ADMIN
+  ORG_OWNER
+  ORG_ADMIN
+  ORG_MANAGER
+  ORG_MEMBER
+  ORG_EXTERNAL_TECH
+  ORG_READ_ONLY
+}
+
+enum MembershipStatus {
+  pending
+  active
+  disabled
+}
+
+enum PermissionOverrideMode {
+  grant
+  revoke
+}
+
+model UserProfile {
+  id                     String                    @id @db.Uuid
+  email                  String                    @unique
+  name                   String?
+  surname                String?
+  phone                  String?
+  isPlatformSuperAdmin   Boolean                   @default(false)
+  memberships            OrganizationMembership[]
+  createdAt              DateTime                  @default(now())
+  updatedAt              DateTime                  @updatedAt
+}
+
+model Organization {
+  id           String                    @id @default(uuid())
+  name         String
+  vatNumber    String?
+  address      String?
+  city         String?
+  country      String?
+  settings     Json?
+  memberships  OrganizationMembership[]
+  roles        Role[]
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+}
+
+model Role {
+  id                      String                     @id @default(uuid())
+  organizationId          String?
+  organization            Organization?              @relation(fields: [organizationId], references: [id])
+  name                    String
+  slug                    String
+  description             String?
+  isSystem                Boolean                    @default(false)
+  systemKey               SystemRoleKey?
+  isEditable              Boolean                    @default(true)
+  isDefaultForNewMembers  Boolean                    @default(false)
+  permissions             RolePermission[]
+  memberships             OrganizationMembership[]
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+
+  @@unique([organizationId, slug])
+}
+
+model Permission {
+  id          String            @id @default(uuid())
+  key         String            @unique
+  group       String
+  description String?
+  roles       RolePermission[]
+  overrides   MembershipPermissionOverride[]
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role        @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission  @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model OrganizationMembership {
+  id             String                        @id @default(uuid())
+  userId         String                        @db.Uuid
+  user           UserProfile                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization                  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  roleId         String
+  role           Role                          @relation(fields: [roleId], references: [id])
+  status         MembershipStatus              @default(pending)
+  invitedByUserId String?
+  permissionOverrides MembershipPermissionOverride[]
+  createdAt      DateTime                      @default(now())
+  updatedAt      DateTime                      @updatedAt
+
+  @@unique([userId, organizationId])
+}
+
+model MembershipPermissionOverride {
+  id           String                 @id @default(uuid())
+  membershipId String
+  membership   OrganizationMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission             @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  mode         PermissionOverrideMode
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  @@unique([membershipId, permissionId])
+}
+
+model TableSetting {
+  id               String   @id @default(uuid())
+  userId           String   @db.Uuid
+  tableKey         String
+  columnOrder      String[]
+  columnVisibility Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([userId, tableKey])
+}
+
 model Site {
   id           String        @id @default(uuid())
   name         String

@@ -8,6 +8,8 @@ import {
   useLazyGetDailySummaryQuery,
   useLazyGetExportsQuery,
 } from "@/services/api";
+import { DataTable } from "@/components/DataTable";
+import { ColumnDef } from "@tanstack/react-table";
 
 const endpointCards = [
   {
@@ -165,7 +167,7 @@ export default function HomePage() {
 
   const exportColumns =
     exportsData && exportsData.length > 0
-      ? Object.keys(exportsData[0]).filter((k) => k !== "siteId" && k !== "siteName")
+      ? Object.keys(exportsData[0]).filter((k) => k !== "siteId")
       : [];
 
   const paginatedExports = useMemo(() => {
@@ -361,36 +363,48 @@ export default function HomePage() {
             {exportsData && exportsData.length > 0 ? (
               <div className="table-wrap">
                 {renderPagination(exportsData.length, exportsPage, exportsPerPage, setExportsPage)}
-                <table>
-                  <thead>
-                    <tr>
-                      {exportColumns.map((k) => (
-                        <th key={k}>{k}</th>
-                      ))}
-                      <th>Cantiere associato</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paginatedExports.map((it) => (
-                      <tr key={String(it.id)}>
-                        {exportColumns.map((k) => (
-                          <td key={k}>{String(it[k] ?? "")}</td>
-                        ))}
-                        <td>
-                          <select value={String(it.siteId ?? "")} onChange={(e) => handleAssociate(String(it.id), e.target.value)}>
-                            <option value="">-- nessuno --</option>
-                            {sites.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {s.name}
-                              </option>
-                            ))}
-                          </select>
-                          {it.siteName ? <div className="muted">Assegnato: {String(it.siteName)}</div> : null}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <DataTable
+                  tableKey="exports"
+                  data={paginatedExports}
+                  columns={
+                    [
+                      ...exportColumns.map(
+                        (key) =>
+                          ({
+                            id: key,
+                            header: key,
+                            accessorFn: (row: Record<string, unknown>) => row[key],
+                            cell: (info) => String(info.getValue() ?? ""),
+                          }) as ColumnDef<Record<string, unknown>, unknown>
+                      ),
+                      {
+                        id: "siteName",
+                        header: "Cantiere associato",
+                        cell: ({ row }) => {
+                          const record = row.original as Record<string, unknown>;
+                          return (
+                            <div>
+                              <select
+                                value={String(record.siteId ?? "")}
+                                onChange={(e) => handleAssociate(String(record.id), e.target.value)}
+                              >
+                                <option value="">-- nessuno --</option>
+                                {sites.map((s) => (
+                                  <option key={s.id} value={s.id}>
+                                    {s.name}
+                                  </option>
+                                ))}
+                              </select>
+                              {record.siteName ? (
+                                <div className="muted">Assegnato: {String(record.siteName)}</div>
+                              ) : null}
+                            </div>
+                          );
+                        },
+                      } as ColumnDef<Record<string, unknown>, unknown>,
+                    ] as ColumnDef<Record<string, unknown>, unknown>[]
+                  }
+                />
                 {renderPagination(exportsData.length, exportsPage, exportsPerPage, setExportsPage)}
               </div>
             ) : (
@@ -441,50 +455,72 @@ export default function HomePage() {
             {dailyData && dailyData.length > 0 ? (
               <div className="table-wrap">
                 {renderPagination(dailyData.length, dailyPage, dailyPerPage, setDailyPage)}
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Nome</th>
-                      <th>Contratto</th>
-                      <th>Giorno</th>
-                      <th>Minuti</th>
-                      <th>Ore (hh:mm)</th>
-                      <th># timbrature</th>
-                      <th>Entrata</th>
-                      <th>Uscita</th>
-                      <th>Sede timbratura</th>
-                      <th>Turno pianificato</th>
-                      <th>Sede pianificata</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paginatedDaily.map((row, idx) => (
-                      <tr key={`${row.contractId}-${row.day}-${idx}`}>
-                        <td>{row.personName || "--"}</td>
-                        <td>{row.contractId || "--"}</td>
-                        <td>{row.day}</td>
-                        <td>{row.workedMinutes}</td>
-                        <td>{formatMinutes(row.workedMinutes)}</td>
-                        <td>{row.clockRecordsCount}</td>
-                        <td>
-                          <div>{row.entryLocation || "--"}</div>
-                          {row.entryTime ? <div className="muted">{row.entryTime}</div> : null}
-                        </td>
-                        <td>
-                          <div>{row.exitLocation || "--"}</div>
-                          {row.exitTime ? <div className="muted">{row.exitTime}</div> : null}
-                        </td>
-                        <td>
-                          {row.stampingLocations && row.stampingLocations.length > 0
+                <DataTable
+                  tableKey="daily_summary"
+                  data={paginatedDaily}
+                  columns={
+                    [
+                      {
+                        id: "personName",
+                        header: "Nome",
+                        accessorKey: "personName",
+                        cell: (info) => String(info.getValue() ?? "--"),
+                      },
+                      {
+                        id: "contractId",
+                        header: "Contratto",
+                        accessorKey: "contractId",
+                        cell: (info) => String(info.getValue() ?? "--"),
+                      },
+                      { id: "day", header: "Giorno", accessorKey: "day" },
+                      { id: "workedMinutes", header: "Minuti", accessorKey: "workedMinutes" },
+                      {
+                        id: "workedHours",
+                        header: "Ore (hh:mm)",
+                        accessorFn: (row) => formatMinutes(row.workedMinutes),
+                        cell: (info) => String(info.getValue() ?? "--"),
+                      },
+                      { id: "clockRecordsCount", header: "# timbrature", accessorKey: "clockRecordsCount" },
+                      {
+                        id: "entry",
+                        header: "Entrata",
+                        cell: ({ row }) => {
+                          const r = row.original as Record<string, unknown>;
+                          return (
+                            <div>
+                              <div>{String(r.entryLocation ?? "--")}</div>
+                              {r.entryTime ? <div className="muted">{String(r.entryTime)}</div> : null}
+                            </div>
+                          );
+                        },
+                      },
+                      {
+                        id: "exit",
+                        header: "Uscita",
+                        cell: ({ row }) => {
+                          const r = row.original as Record<string, unknown>;
+                          return (
+                            <div>
+                              <div>{String(r.exitLocation ?? "--")}</div>
+                              {r.exitTime ? <div className="muted">{String(r.exitTime)}</div> : null}
+                            </div>
+                          );
+                        },
+                      },
+                      {
+                        id: "stampingLocations",
+                        header: "Sede timbratura",
+                        accessorFn: (row) =>
+                          row.stampingLocations && row.stampingLocations.length > 0
                             ? row.stampingLocations.join(" | ")
-                            : "--"}
-                        </td>
-                        <td>{row.plannedShift || "--"}</td>
-                        <td>{row.plannedLocation || "--"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                            : "--",
+                        cell: (info) => String(info.getValue() ?? "--"),
+                      },
+                      { id: "plannedShift", header: "Turno pianificato", accessorKey: "plannedShift" },
+                      { id: "plannedLocation", header: "Sede pianificata", accessorKey: "plannedLocation" },
+                    ] as ColumnDef<Record<string, unknown>, unknown>[]
+                  }
+                />
                 {renderPagination(dailyData.length, dailyPage, dailyPerPage, setDailyPage)}
               </div>
             ) : (
@@ -518,24 +554,22 @@ export default function HomePage() {
             {contractsData && contractsData.length > 0 ? (
               <div className="table-wrap">
                 {renderPagination(contractsData.length, contractsPage, contractsPerPage, setContractsPage)}
-                <table>
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>Nome</th>
-                      <th>Email</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paginatedContracts.map((c, idx) => (
-                      <tr key={`${c.id}-${idx}`}>
-                        <td>{c.id}</td>
-                        <td>{`${c.first_name || ""} ${c.last_name || ""}`.trim() || "--"}</td>
-                        <td>{c.email || "--"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <DataTable
+                  tableKey="contracts"
+                  data={paginatedContracts}
+                  columns={
+                    [
+                      { id: "id", header: "ID", accessorKey: "id" },
+                      {
+                        id: "name",
+                        header: "Nome",
+                        accessorFn: (row) => `${row.first_name || ""} ${row.last_name || ""}`.trim() || "--",
+                        cell: (info) => String(info.getValue() ?? "--"),
+                      },
+                      { id: "email", header: "Email", accessorKey: "email" },
+                    ] as ColumnDef<Record<string, unknown>, unknown>[]
+                  }
+                />
                 {renderPagination(contractsData.length, contractsPage, contractsPerPage, setContractsPage)}
               </div>
             ) : (
