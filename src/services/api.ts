@@ -17,8 +17,10 @@ export type DailyItem = {
   stampingLocations?: string[];
   entryLocation?: string;
   entryTime?: string;
+  entryDeviceType?: string;
   exitLocation?: string;
   exitTime?: string;
+  exitDeviceType?: string;
   plannedShift?: string;
   plannedLocation?: string;
   [key: string]: unknown;

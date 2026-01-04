@@ -28,7 +28,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="it">
-      <body className={`${bodyFont.variable} ${displayFont.variable}`}>
+      <body
+        className={`${bodyFont.variable} ${displayFont.variable}`}
+        suppressHydrationWarning
+      >
         <Providers>
           <AuthGate>{children}</AuthGate>
         </Providers>

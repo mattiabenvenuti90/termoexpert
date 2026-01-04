@@ -9,6 +9,7 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const useMock = searchParams.get("mock") === "1" || searchParams.get("mock") === "true";
+  const debug = searchParams.get("debug") === "1" || searchParams.get("debug") === "true";
 
   if (useMock) {
     return NextResponse.json(generateMockContracts());
@@ -36,6 +37,10 @@ export async function GET(request: NextRequest) {
     }));
     return NextResponse.json(normalized);
   } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
+    const e = err as Error & { details?: unknown };
+    return NextResponse.json(
+      debug ? { error: e.message, details: e.details ?? null } : { error: e.message },
+      { status: 500 }
+    );
   }
 }

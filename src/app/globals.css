@@ -375,6 +375,32 @@ button:hover,
   border-radius: 8px;
 }
 
+.debug-box {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px dashed rgba(34, 211, 238, 0.4);
+  border-radius: 12px;
+  background: rgba(14, 22, 40, 0.5);
+  color: var(--muted);
+  font-size: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.debug-title {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.debug-links {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .table-wrap {
   overflow-x: auto;
   overflow-y: hidden;
