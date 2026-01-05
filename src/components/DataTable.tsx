@@ -13,6 +13,10 @@ type TableSettings = {
   columnVisibility: Record<string, boolean>;
 };
 
+type ColumnSizingCache = Record<string, number>;
+
+const sizingCacheKey = (tableKey: string) => `table-sizing:${tableKey}`;
+
 type DataTableProps<T> = {
   tableKey: string;
   data: T[];
@@ -39,8 +43,11 @@ function getAccessToken() {
 export function DataTable<T>({ tableKey, data, columns }: DataTableProps<T>) {
   const [columnVisibility, setColumnVisibility] = useState<Record<string, boolean>>({});
   const [columnOrder, setColumnOrder] = useState<string[]>([]);
+  const [columnSizing, setColumnSizing] = useState<Record<string, number>>({});
+  const [autoSizing, setAutoSizing] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const saveTimer = useRef<number | null>(null);
+  const tableRef = useRef<HTMLTableElement | null>(null);
 
   const columnIds = useMemo(
     () => columns.map((col) => col.id).filter(Boolean) as string[],
@@ -50,6 +57,14 @@ export function DataTable<T>({ tableKey, data, columns }: DataTableProps<T>) {
   useEffect(() => {
     let ignore = false;
     const load = async () => {
+      const cachedSizing = window.localStorage.getItem(sizingCacheKey(tableKey));
+      if (cachedSizing) {
+        try {
+          setColumnSizing(JSON.parse(cachedSizing) as ColumnSizingCache);
+        } catch {
+          window.localStorage.removeItem(sizingCacheKey(tableKey));
+        }
+      }
       const token = getAccessToken();
       const headers: Record<string, string> = {};
       if (token) headers.Authorization = `Bearer ${token}`;
@@ -77,8 +92,9 @@ export function DataTable<T>({ tableKey, data, columns }: DataTableProps<T>) {
         headers,
         body: JSON.stringify({ columnOrder, columnVisibility }),
       });
+      window.localStorage.setItem(sizingCacheKey(tableKey), JSON.stringify(columnSizing));
     }, 500);
-  }, [columnOrder, columnVisibility, tableKey]);
+  }, [columnOrder, columnVisibility, columnSizing, tableKey]);
 
   const orderedColumns = useMemo(() => {
     if (columnOrder.length === 0) return columns;
@@ -93,14 +109,48 @@ export function DataTable<T>({ tableKey, data, columns }: DataTableProps<T>) {
   const table = useReactTable({
     data,
     columns: orderedColumns,
+    defaultColumn: {
+      minSize: 80,
+    },
     state: {
+      columnSizing,
       columnVisibility,
       columnOrder,
     },
+    enableColumnResizing: true,
+    columnResizeMode: "onChange",
+    onColumnSizingChange: setColumnSizing,
     onColumnVisibilityChange: setColumnVisibility,
     onColumnOrderChange: setColumnOrder,
     getCoreRowModel: getCoreRowModel(),
   });
+
+  useEffect(() => {
+    if (Object.keys(columnSizing).length > 0) {
+      setAutoSizing(false);
+      return;
+    }
+    if (!tableRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const tableEl = tableRef.current;
+      if (!tableEl) return;
+      const nextSizing: Record<string, number> = {};
+      table.getVisibleLeafColumns().forEach((col) => {
+        const cells = tableEl.querySelectorAll(`[data-column-id="${col.id}"]`);
+        let maxWidth = 0;
+        cells.forEach((cell) => {
+          const el = cell as HTMLElement;
+          maxWidth = Math.max(maxWidth, el.scrollWidth);
+        });
+        if (maxWidth > 0) nextSizing[col.id] = maxWidth;
+      });
+      if (Object.keys(nextSizing).length > 0) {
+        setColumnSizing(nextSizing);
+      }
+      setAutoSizing(false);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [columnSizing, data, table, columns]);
 
   const visibleColumns = table.getAllLeafColumns();
 
@@ -145,15 +195,28 @@ export function DataTable<T>({ tableKey, data, columns }: DataTableProps<T>) {
           </div>
         ) : null}
       </div>
-      <table>
+      <table ref={tableRef} style={{ tableLayout: autoSizing ? "auto" : "fixed" }}>
         <thead>
           {table.getHeaderGroups().map((headerGroup) => (
             <tr key={headerGroup.id}>
               {headerGroup.headers.map((header) => (
-                <th key={header.id}>
+                <th
+                  key={header.id}
+                  data-column-id={header.column.id}
+                  style={{ width: header.getSize() }}
+                >
                   {header.isPlaceholder
                     ? null
                     : flexRender(header.column.columnDef.header, header.getContext())}
+                  {header.column.getCanResize() ? (
+                    <div
+                      onMouseDown={header.getResizeHandler()}
+                      onTouchStart={header.getResizeHandler()}
+                      className={`table-resizer ${
+                        header.column.getIsResizing() ? "is-resizing" : ""
+                      }`}
+                    />
+                  ) : null}
                 </th>
               ))}
             </tr>
@@ -163,7 +226,11 @@ export function DataTable<T>({ tableKey, data, columns }: DataTableProps<T>) {
           {table.getRowModel().rows.map((row) => (
             <tr key={row.id}>
               {row.getVisibleCells().map((cell) => (
-                <td key={cell.id}>
+                <td
+                  key={cell.id}
+                  data-column-id={cell.column.id}
+                  style={{ width: cell.column.getSize() }}
+                >
                   {flexRender(cell.column.columnDef.cell, cell.getContext())}
                 </td>
               ))}

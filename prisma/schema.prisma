@@ -151,3 +151,121 @@ model Association {
   site      Site?    @relation(fields: [siteId], references: [id])
   createdAt DateTime @default(now())
 }
+
+// Fluida sync module models.
+model Stamping {
+  id             String   @id @default(uuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  fluidaId       String
+  companyId      String?
+  contractId     String?
+  userId         String?
+  stampingAt     DateTime
+  dayKey         String?
+  direction      String?
+  deviceId       String?
+  deviceType     String?
+  subsidiaryId   String?
+  note           String?
+  raw            Json?
+  daySummaryId   String?
+  daySummary     StampingDaySummary? @relation(fields: [daySummaryId], references: [id], onDelete: SetNull)
+  changeLogs     StampingChangeLog[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([organizationId, fluidaId])
+  @@index([organizationId, companyId, stampingAt])
+  @@index([organizationId, contractId, stampingAt])
+  @@index([organizationId, dayKey])
+}
+
+model StampingDaySummary {
+  id            String   @id @default(uuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  companyId     String?
+  contractId    String?
+  day           DateTime
+  costCenterId  String?
+  shiftPlanId   String?
+  plannedShift  String?
+  plannedLocation String?
+  minutesWorked Int?
+  source        String?
+  stampings     Stamping[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([organizationId, companyId, contractId, day])
+}
+
+model StampingChangeLog {
+  id            String   @id @default(uuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  stampingId    String
+  stamping      Stamping @relation(fields: [stampingId], references: [id], onDelete: Cascade)
+  fluidaId      String
+  changedAt     DateTime @default(now())
+  changedBy     String
+  changeReason  String
+  before        Json
+  after         Json
+  diff          Json
+  changedFields String[]
+
+  @@index([organizationId, stampingId])
+  @@index([organizationId, fluidaId])
+}
+
+model StampingSyncState {
+  id                   String   @id @default(uuid())
+  organizationId       String
+  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  companyId            String?
+  lastSyncAt           DateTime?
+  lastSuccessfulSyncAt DateTime?
+  windowDays           Int      @default(14)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([organizationId])
+}
+
+model StampingSyncLog {
+  id              String   @id @default(uuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  companyId       String?
+  status          String
+  rangeFrom       DateTime
+  rangeTo         DateTime
+  startedAt       DateTime @default(now())
+  finishedAt      DateTime?
+  recordsFetched  Int      @default(0)
+  recordsInserted Int      @default(0)
+  recordsUpdated  Int      @default(0)
+  recordsSkipped  Int      @default(0)
+  errors          Json?
+
+  @@index([organizationId, startedAt])
+}
+
+model FluidaIntegrationSettings {
+  id             String   @id @default(uuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  apiUrl         String
+  authMethod     String
+  apiKeyHeader   String
+  companyId      String?
+  encryptedData  String
+  iv             String
+  authTag        String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([organizationId])
+}

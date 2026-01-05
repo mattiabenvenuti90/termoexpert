@@ -87,7 +87,7 @@ export const api = createApi({
       return headers;
     },
   }),
-  tagTypes: ["Exports", "Daily", "Sites", "Contracts"],
+  tagTypes: ["Exports", "Daily", "Sites", "Contracts", "FluidaSync"],
   endpoints: (builder) => ({
     getExports: builder.query<ExportItem[], ExportParams>({
       query: (params) => ({
