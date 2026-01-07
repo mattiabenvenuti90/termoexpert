@@ -11,7 +11,7 @@ export async function requireUser(request: NextRequest): Promise<AuthResult> {
       ok: true,
       supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
       supabaseKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
-      userId: "dev-user",
+      userId: "00000000-0000-0000-0000-000000000001",
     };
   }
 

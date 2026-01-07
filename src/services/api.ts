@@ -31,6 +31,11 @@ export type DailyResponse = {
   items: DailyItem[];
 };
 
+export type DbDailyResponse = {
+  date: string;
+  items: DailyItem[];
+};
+
 export type Site = {
   id: string;
   name: string;
@@ -56,6 +61,12 @@ type DailyParams = {
   date: string;
   include_calendar?: boolean;
   mock?: boolean;
+};
+
+type DbDailyParams = {
+  date: string;
+  organizationId: string;
+  include_calendar?: boolean;
 };
 
 function getAccessToken() {
@@ -113,6 +124,18 @@ export const api = createApi({
       }),
       providesTags: ["Daily"],
     }),
+    getDbDailySummary: builder.query<DbDailyResponse, DbDailyParams>({
+      query: (params) => ({
+        url: "sync_daily_summary",
+        params: {
+          date: params.date,
+          organizationId: params.organizationId,
+          include_calendar: params.include_calendar ? 1 : 0,
+          format: "json",
+        },
+      }),
+      providesTags: ["Daily"],
+    }),
     getSites: builder.query<Site[], void>({
       query: () => "sites",
       providesTags: ["Sites"],
@@ -148,6 +171,7 @@ export const api = createApi({
 export const {
   useLazyGetExportsQuery,
   useLazyGetDailySummaryQuery,
+  useLazyGetDbDailySummaryQuery,
   useLazyGetContractsQuery,
   useGetSitesQuery,
   useAssociateMutation,

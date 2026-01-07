@@ -14,6 +14,15 @@ function formatDate(value?: string | null) {
   return d.toLocaleString();
 }
 
+function diffMinutes(start?: string | null, end?: string | null) {
+  if (!start || !end) return null;
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null;
+  const minutes = Math.max(0, Math.round((endDate.getTime() - startDate.getTime()) / 60000));
+  return `${minutes} min`;
+}
+
 export function SyncDashboard({ organizationId }: SyncDashboardProps) {
   const orgId = organizationId || "";
   const [windowDays, setWindowDays] = useState<number>(14);
@@ -27,6 +36,10 @@ export function SyncDashboard({ organizationId }: SyncDashboardProps) {
   const { data, isLoading, isError, refetch } = useGetFluidaSyncStatusQuery(queryArgs, {
     skip: !orgId,
   });
+  const lastLog = data?.status?.lastLog ?? null;
+  const lastErrors = (data?.logs?.[0]?.errors as { plannedErrors?: unknown[] } | undefined)?.plannedErrors;
+  const lastStatus = lastLog?.status || (runState.isLoading ? "running" : "idle");
+  const lastDuration = lastLog ? diffMinutes(lastLog.startedAt, lastLog.finishedAt) : null;
 
   if (!orgId) {
     return (
@@ -87,11 +100,40 @@ export function SyncDashboard({ organizationId }: SyncDashboardProps) {
           <div>Ultimo sync: {formatDate(data.status.lastSyncAt)}</div>
           <div>Ultimo sync OK: {formatDate(data.status.lastSuccessfulSyncAt)}</div>
           <div>Window giorni: {data.status.windowDays}</div>
-          {data.status.lastLog ? (
-            <div>
-              Ultimo log: {data.status.lastLog.status} (
-              {formatDate(data.status.lastLog.startedAt)})
-            </div>
+          {lastLog ? (
+            <>
+              <div className="inline">
+                Stato:
+                <span className={`status-pill status-${lastStatus}`}>
+                  {lastStatus === "running"
+                    ? "In corso"
+                    : lastStatus === "success"
+                    ? "Completata"
+                    : lastStatus === "failed"
+                    ? "Fallita"
+                    : lastStatus}
+                </span>
+              </div>
+              <div>Avvio: {formatDate(lastLog.startedAt)}</div>
+              <div>Fine: {formatDate(lastLog.finishedAt)}</div>
+              <div>Durata: {lastDuration ?? "-"}</div>
+              <div>
+                Periodo: {lastLog.rangeFrom.slice(0, 10)} - {lastLog.rangeTo.slice(0, 10)}
+              </div>
+              <div>
+                Risultato: F {lastLog.recordsFetched} | I {lastLog.recordsInserted} | U{" "}
+                {lastLog.recordsUpdated} | S {lastLog.recordsSkipped}
+              </div>
+              {lastErrors && lastErrors.length ? (
+                <div className="error-box">
+                  Errori pianificazioni: {lastErrors.length}
+                  <div className="muted">
+                    {JSON.stringify(lastErrors.slice(0, 3))}
+                    {lastErrors.length > 3 ? "..." : ""}
+                  </div>
+                </div>
+              ) : null}
+            </>
           ) : null}
         </div>
       ) : null}
@@ -103,10 +145,12 @@ export function SyncDashboard({ organizationId }: SyncDashboardProps) {
             <th>Stato</th>
             <th>Avvio</th>
             <th>Fine</th>
+            <th>Durata</th>
             <th>Fetch</th>
             <th>Ins</th>
             <th>Agg</th>
             <th>Skip</th>
+            <th>Errori</th>
           </tr>
         </thead>
         <tbody>
@@ -116,18 +160,24 @@ export function SyncDashboard({ organizationId }: SyncDashboardProps) {
                 <td>
                   {log.rangeFrom.slice(0, 10)} - {log.rangeTo.slice(0, 10)}
                 </td>
-                <td>{log.status}</td>
+                <td>
+                  <span className={`status-pill status-${log.status}`}>{log.status}</span>
+                </td>
                 <td>{formatDate(log.startedAt)}</td>
                 <td>{formatDate(log.finishedAt)}</td>
+                <td>{diffMinutes(log.startedAt, log.finishedAt) ?? "-"}</td>
                 <td>{log.recordsFetched}</td>
                 <td>{log.recordsInserted}</td>
                 <td>{log.recordsUpdated}</td>
                 <td>{log.recordsSkipped}</td>
+                <td>
+                  {(log.errors as { plannedErrors?: unknown[] } | undefined)?.plannedErrors?.length ?? 0}
+                </td>
               </tr>
             ))
           ) : (
             <tr>
-              <td colSpan={8} className="muted">
+              <td colSpan={10} className="muted">
                 Nessun log disponibile.
               </td>
             </tr>

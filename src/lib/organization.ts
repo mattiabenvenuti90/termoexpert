@@ -9,6 +9,29 @@ export async function requireOrganization(
   request: NextRequest,
   userId: string
 ): Promise<OrgResult> {
+  if (process.env.AUTH_DISABLED === "1") {
+    const org =
+      (request.nextUrl.searchParams.get("organizationId") ||
+        request.headers.get("x-organization-id")) ??
+      null;
+    if (org) {
+      return { ok: true, organizationId: org };
+    }
+    const first = await prisma.organization.findFirst({
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    if (!first) {
+      return {
+        ok: false,
+        response: NextResponse.json(
+          { error: "No organization found" },
+          { status: 404 }
+        ),
+      };
+    }
+    return { ok: true, organizationId: first.id };
+  }
   const organizationId =
     request.nextUrl.searchParams.get("organizationId") ||
     request.headers.get("x-organization-id");

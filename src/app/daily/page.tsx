@@ -1,9 +1,19 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/DataTable";
-import { useLazyGetContractsQuery, useLazyGetDailySummaryQuery, type DailyItem, type Contract } from "@/services/api";
+import {
+  useGetFluidaSyncSettingsQuery,
+  useGetFluidaSyncStatusQuery,
+  useRunFluidaSyncMutation,
+} from "@/modules/fluida-sync";
+import {
+  useLazyGetContractsQuery,
+  useLazyGetDbDailySummaryQuery,
+  type DailyItem,
+  type Contract,
+} from "@/services/api";
 import { useShell } from "../app-shell";
 
 function formatMinutes(mins?: number) {
@@ -19,6 +29,22 @@ function formatDeviceType(value?: string) {
   if (raw === "gps") return "GPS";
   if (raw === "manual") return "Manuale";
   return raw.toUpperCase();
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
+}
+
+function diffMinutes(start?: string | null, end?: string | null) {
+  if (!start || !end) return null;
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return null;
+  const minutes = Math.max(0, Math.round((endDate.getTime() - startDate.getTime()) / 60000));
+  return `${minutes} min`;
 }
 
 function renderPagination(
@@ -46,57 +72,83 @@ function renderPagination(
 }
 
 export default function DailyPage() {
-  const { mock } = useShell();
+  const { mock, organizationId, organizationStatus, organizationError } = useShell();
   const [dailyDate, setDailyDate] = useState(new Date().toISOString().slice(0, 10));
   const [includeCalendar, setIncludeCalendar] = useState(true);
   const [dailyPage, setDailyPage] = useState(1);
   const [dailyPerPage, setDailyPerPage] = useState(25);
   const [dailyStatus, setDailyStatus] = useState("");
-  const [dailyCache, setDailyCache] = useState<DailyItem[]>([]);
-  const [dailyCacheLoaded, setDailyCacheLoaded] = useState(false);
-  const autoLoaded = useRef(false);
+  const [syncStatus, setSyncStatus] = useState("");
+  const [dailyItems, setDailyItems] = useState<DailyItem[]>([]);
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const [syncResult, setSyncResult] = useState<{
+    fetched: number;
+    inserted: number;
+    updated: number;
+    skipped: number;
+    dirtyDays: number;
+  } | null>(null);
+  const [syncError, setSyncError] = useState("");
 
-  const [triggerDaily, dailyResult] = useLazyGetDailySummaryQuery();
+  const [triggerDaily] = useLazyGetDbDailySummaryQuery();
   const [triggerContracts, contractsResult] = useLazyGetContractsQuery();
+  const [runSync, runSyncState] = useRunFluidaSyncMutation();
+  const {
+    data: syncStatusData,
+    isFetching: syncStatusLoading,
+    refetch: refetchSyncStatus,
+  } = useGetFluidaSyncStatusQuery({ organizationId, limit: 5 }, { skip: !organizationId });
+  const { data: syncSettings } = useGetFluidaSyncSettingsQuery(
+    { organizationId },
+    { skip: !organizationId }
+  );
 
-  const dailyData = dailyCacheLoaded ? dailyCache : dailyResult.data?.items ?? [];
+  const dailyData = dailyItems;
   const contractsData = contractsResult.data ?? [];
+  const lastLog = syncStatusData?.status?.lastLog ?? null;
+  const lastErrors = (syncStatusData?.logs?.[0]?.errors as { plannedErrors?: unknown[] } | undefined)
+    ?.plannedErrors;
+  const lastStatus = lastLog?.status || (runSyncState.isLoading ? "running" : "idle");
+  const lastDuration = lastLog ? diffMinutes(lastLog.startedAt, lastLog.finishedAt) : null;
 
   const dailyCsvUrl = useMemo(() => {
     const params = new URLSearchParams({
       date: dailyDate,
       include_calendar: includeCalendar ? "1" : "0",
-      mock: mock ? "1" : "0",
+      organizationId,
     });
-    return `/api/daily_summary?${params.toString()}`;
-  }, [dailyDate, includeCalendar, mock]);
+    return `/api/sync_daily_summary?${params.toString()}`;
+  }, [dailyDate, includeCalendar, organizationId]);
 
   const loadDaily = async () => {
+    if (!organizationId) {
+      setDailyStatus(
+        organizationStatus === "error"
+          ? organizationError || "Errore nel recupero organizationId."
+          : "Recupero organizationId..."
+      );
+      return;
+    }
     setDailyStatus("Caricamento riepilogo...");
     try {
       const data = await triggerDaily(
         {
           date: dailyDate,
+          organizationId,
           include_calendar: includeCalendar,
-          mock,
         },
         true
       ).unwrap();
       const items = data.items ?? [];
-      setDailyCache(items);
-      setDailyCacheLoaded(true);
-      if (typeof window !== "undefined") {
-        const payload = {
-          date: dailyDate,
-          includeCalendar,
-          items,
-        };
-        window.localStorage.setItem("dailySummaryCache", JSON.stringify(payload));
-      }
+      setDailyItems(items);
       setDailyPage(1);
       setDailyStatus(`Trovate ${items.length} righe`);
     } catch (err) {
-      setDailyStatus("Errore durante la lettura del riepilogo");
+      const message =
+        typeof err === "object" && err && "data" in err
+          ? String((err as { data?: { error?: string } }).data?.error || "")
+          : "";
+      setDailyStatus(message ? `Errore: ${message}` : "Errore durante la lettura del riepilogo");
     }
   };
 
@@ -109,38 +161,18 @@ export default function DailyPage() {
   };
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const raw = window.localStorage.getItem("dailySummaryCache");
-    if (!raw) {
-      setDailyCacheLoaded(true);
+    if (!organizationId) {
+      setDailyItems([]);
+      setDailyStatus(
+        organizationStatus === "error"
+          ? organizationError || "Errore nel recupero organizationId."
+          : "Recupero organizationId..."
+      );
       return;
     }
-    try {
-      const parsed = JSON.parse(raw) as {
-        date?: string;
-        includeCalendar?: boolean;
-        items?: DailyItem[];
-      };
-      if (parsed.date) setDailyDate(parsed.date);
-      if (typeof parsed.includeCalendar === "boolean") setIncludeCalendar(parsed.includeCalendar);
-      if (Array.isArray(parsed.items)) {
-        setDailyCache(parsed.items);
-        setDailyStatus(`Caricato da cache: ${parsed.items.length} righe`);
-      }
-    } catch {
-      // ignore cache parsing errors
-    } finally {
-      setDailyCacheLoaded(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!dailyCacheLoaded) return;
-    if (autoLoaded.current) return;
-    autoLoaded.current = true;
     loadDaily();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dailyCacheLoaded]);
+  }, [dailyDate, organizationId]);
 
   useEffect(() => {
     loadContracts();
@@ -233,11 +265,157 @@ export default function DailyPage() {
           <input type="checkbox" checked={includeCalendar} onChange={(e) => setIncludeCalendar(e.target.checked)} />
           Includi sede pianificata
         </label>
-        <button onClick={loadDaily}>Aggiorna riepilogo</button>
+        <button onClick={loadDaily} disabled={!organizationId}>
+          Aggiorna dal DB
+        </button>
+        <button
+          className="ghost"
+          disabled={!organizationId || runSyncState.isLoading}
+          onClick={() => {
+            setSyncModalOpen(true);
+            setSyncError("");
+            setSyncResult(null);
+            runSync({ organizationId, windowDays: syncSettings?.windowDays ?? 14 })
+              .unwrap()
+              .then((res) => {
+                setSyncStatus("Sync completata.");
+                if (res.stats) setSyncResult(res.stats);
+                refetchSyncStatus();
+                return loadDaily();
+              })
+              .catch((err) => {
+                const message =
+                  typeof err === "object" && err && "data" in err
+                    ? String((err as { data?: { error?: string } }).data?.error || "")
+                    : "";
+                setSyncError(message || "Sync fallita.");
+                setSyncStatus(message ? `Sync fallita: ${message}` : "Sync fallita.");
+                refetchSyncStatus();
+              });
+          }}
+        >
+          {runSyncState.isLoading ? "Sync Fluida..." : "Sync Fluida"}
+        </button>
+        <button
+          className="ghost"
+          disabled={!organizationId}
+          onClick={() => {
+            setSyncModalOpen(true);
+            refetchSyncStatus();
+          }}
+        >
+          Stato sync
+        </button>
         <a className="ghost" href={dailyCsvUrl}>
           Scarica CSV
         </a>
       </div>
+      {!organizationId ? (
+        <p className="muted">
+          {organizationStatus === "error"
+            ? organizationError || "Errore nel recupero organizationId."
+            : "Recupero organizationId in corso..."}
+        </p>
+      ) : null}
+      {syncStatus ? <p className="muted">{syncStatus}</p> : null}
+      {syncModalOpen ? (
+        <div className="modal-overlay" onClick={() => setSyncModalOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Stato sincronizzazione</h3>
+              <button className="ghost" onClick={() => setSyncModalOpen(false)}>
+                Chiudi
+              </button>
+            </div>
+            <div className="modal-body">
+              {runSyncState.isLoading ? <p>Sync in corso...</p> : null}
+              {syncError ? <p className="muted">{syncError}</p> : null}
+              {syncResult ? (
+                <div className="debug-box">
+                  <div className="debug-title">Risultato sync</div>
+                  <div>Fetch: {syncResult.fetched}</div>
+                  <div>Inseriti: {syncResult.inserted}</div>
+                  <div>Aggiornati: {syncResult.updated}</div>
+                  <div>Saltati: {syncResult.skipped}</div>
+                  <div>Giorni ricalcolati: {syncResult.dirtyDays}</div>
+                </div>
+              ) : null}
+              <div className="debug-box">
+                <div className="debug-title">Ultimo log</div>
+                {syncStatusLoading ? (
+                  <div>Caricamento...</div>
+                ) : lastLog ? (
+                  <>
+                    <div className="inline">
+                      Stato:
+                      <span className={`status-pill status-${lastStatus}`}>
+                        {lastStatus === "running"
+                          ? "In corso"
+                          : lastStatus === "success"
+                          ? "Completata"
+                          : lastStatus === "failed"
+                          ? "Fallita"
+                          : lastStatus}
+                      </span>
+                    </div>
+                    <div>
+                      Periodo: {lastLog.rangeFrom.slice(0, 10)} - {lastLog.rangeTo.slice(0, 10)}
+                    </div>
+                    <div>Avvio: {formatDateTime(lastLog.startedAt)}</div>
+                    <div>Fine: {formatDateTime(lastLog.finishedAt)}</div>
+                    <div>Durata: {lastDuration ?? "--"}</div>
+                    <div>Fetch: {lastLog.recordsFetched}</div>
+                    <div>Inseriti: {lastLog.recordsInserted}</div>
+                    <div>Aggiornati: {lastLog.recordsUpdated}</div>
+                    <div>Saltati: {lastLog.recordsSkipped}</div>
+                    {lastErrors && lastErrors.length ? (
+                      <div className="error-box">
+                        Errori pianificazioni: {lastErrors.length}
+                        <div className="muted">
+                          {JSON.stringify(lastErrors.slice(0, 3))}
+                          {lastErrors.length > 3 ? "..." : ""}
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div>Nessun log disponibile.</div>
+                )}
+              </div>
+              {syncStatusData?.logs?.length ? (
+                <div className="debug-box">
+                  <div className="debug-title">Log recenti</div>
+                  <div className="log-list">
+                    {syncStatusData.logs.slice(0, 5).map((log) => {
+                      const status = log.status;
+                      const duration = diffMinutes(log.startedAt, log.finishedAt);
+                      const errors =
+                        (log.errors as { plannedErrors?: unknown[] } | undefined)?.plannedErrors?.length ?? 0;
+                      return (
+                        <div key={log.id} className="log-row">
+                          <div className="inline">
+                            <span className={`status-pill status-${status}`}>{status}</span>
+                            <span>
+                              {log.rangeFrom.slice(0, 10)} - {log.rangeTo.slice(0, 10)}
+                            </span>
+                          </div>
+                          <div className="muted">
+                            {formatDateTime(log.startedAt)} → {formatDateTime(log.finishedAt)} ({duration ?? "--"})
+                          </div>
+                          <div className="muted">
+                            F {log.recordsFetched} | I {log.recordsInserted} | U {log.recordsUpdated} | S{" "}
+                            {log.recordsSkipped} | Err {errors}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="debug-box">
         <div className="debug-title">Debug</div>
         <div className="debug-links">
@@ -246,6 +424,13 @@ export default function DailyPage() {
           >
             /api/daily_summary?debug=1
           </a>
+          {organizationId ? (
+            <a
+              href={`/api/sync_daily_summary?date=${dailyDate}&organizationId=${encodeURIComponent(organizationId)}&format=json`}
+            >
+              /api/sync_daily_summary?format=json
+            </a>
+          ) : null}
           <a href="/api/contracts?debug=1">/api/contracts?debug=1</a>
         </div>
       </div>

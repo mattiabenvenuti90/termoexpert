@@ -1,6 +1,11 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { fetchExports } from "@/lib/fluida";
+import {
+  fetchCalendarSummary,
+  fetchExports,
+  fetchPlannedSubsidiary,
+  fetchSubsidiaries,
+} from "@/lib/fluida";
 import { decryptJson } from "@/modules/fluida-sync/server/crypto";
 
 type FluidaStamping = Record<string, unknown>;
@@ -62,6 +67,13 @@ type FluidaSettings = {
 type PlannedInfo = {
   shift: string;
   location: string;
+};
+
+type PlannedSyncError = {
+  contractId: string;
+  dayKey: string;
+  stage: "calendar" | "planned_subsidiary" | "empty";
+  message: string;
 };
 
 function toIsoDate(date: Date) {
@@ -136,6 +148,34 @@ function getAuthHeaders(settings: FluidaSettings) {
   return headers;
 }
 
+function pickName(obj: Record<string, unknown> | null | undefined) {
+  if (!obj) return "";
+  return (
+    (obj.name as string) ||
+    (obj.full_name as string) ||
+    (obj.fullName as string) ||
+    (obj.label as string) ||
+    (obj.description as string) ||
+    ""
+  );
+}
+
+function pickLocationName(obj: Record<string, unknown> | null | undefined) {
+  if (!obj) return "";
+  return (
+    (obj.subsidiary_name as string) ||
+    (obj.location as string) ||
+    (obj.site_name as string) ||
+    (obj.site as string) ||
+    (obj.location_name as string) ||
+    (obj.workplace as string) ||
+    (obj.place as string) ||
+    (obj.location_description as string) ||
+    pickName(obj) ||
+    ""
+  );
+}
+
 function baseFromApiUrl(apiUrl: string) {
   const apiIndex = apiUrl.indexOf("/api/v1");
   if (apiIndex !== -1) {
@@ -156,7 +196,7 @@ function buildStampingsUrl(settings: FluidaSettings) {
   const baseLower = urlBase.toLowerCase();
   if ((!baseLower.includes("/api/v1") && !baseLower.includes("/stampings")) || baseLower === "https://api.fluida.io") {
     if (!settings.companyId) throw new Error("Fluida company id missing");
-    url = `${urlBase.replace(/\\/$/, "")}/api/v1/stampings/list/${settings.companyId}`;
+    url = `${urlBase.replace(/\/$/, "")}/api/v1/stampings/list/${settings.companyId}`;
   } else {
     if (settings.companyId && url.includes("{company_id}")) url = url.replace("{company_id}", settings.companyId);
     else if (settings.companyId && url.endsWith("/")) url = `${url}${settings.companyId}`;
@@ -164,8 +204,20 @@ function buildStampingsUrl(settings: FluidaSettings) {
   return url;
 }
 
-async function requestJson(url: string, init: RequestInit) {
-  const res = await fetch(url, init);
+async function requestJson(url: string, init: RequestInit, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    clearTimeout(timer);
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error("Fluida request timeout");
+    }
+    throw err;
+  }
+  clearTimeout(timer);
   if (!res.ok) {
     const raw = await res.text().catch(() => "");
     let data: unknown = null;
@@ -185,7 +237,7 @@ async function fetchStampings(settings: FluidaSettings, params: Record<string, s
   const url = buildStampingsUrl(settings);
   const headers = getAuthHeaders(settings);
   const qs = new URLSearchParams(params).toString();
-  const data = await requestJson(qs ? `${url}?${qs}` : url, { headers });
+  const data = await requestJson(qs ? `${url}?${qs}` : url, { headers }, 30000);
   if (Array.isArray(data)) return data;
   if (data && Array.isArray((data as { items?: unknown[] }).items)) return (data as { items: unknown[] }).items;
   if (data && Array.isArray((data as { data?: unknown[] }).data)) return (data as { data: unknown[] }).data;
@@ -213,18 +265,43 @@ async function fetchCalendarSummaryCustom(settings: FluidaSettings, date: string
   for (const url of candidates) {
     const qs = new URLSearchParams({ date }).toString();
     try {
-      return await requestJson(`${url}?${qs}`, { headers });
+      return await requestJson(`${url}?${qs}`, { headers }, 20000);
     } catch {
       // try next
     }
     const qsRange = new URLSearchParams({ start_date: date, end_date: date }).toString();
     try {
-      return await requestJson(`${url}?${qsRange}`, { headers });
+      return await requestJson(`${url}?${qsRange}`, { headers }, 20000);
     } catch {
       // try next
     }
   }
   return null;
+}
+
+async function fetchSubsidiariesCustom(settings: FluidaSettings) {
+  if (!settings.companyId) throw new Error("Fluida company id missing");
+  const base = baseFromApiUrl(settings.apiUrl);
+  const candidates = [
+    `${base}/api/v1/subsidiaries/company/${settings.companyId}`,
+    `${base}/api/v1/subsidiaries/${settings.companyId}`,
+    `${base}/api/v1/companies/${settings.companyId}/subsidiaries`,
+    `${base}/subsidiaries/${settings.companyId}`,
+    `${base}/api/v1/subsidiaries`,
+    `${base}/subsidiaries`,
+  ];
+  const headers = getAuthHeaders(settings);
+  for (const url of candidates) {
+    try {
+      const data = await requestJson(`${url}?page_size=200`, { headers }, 15000);
+      if (Array.isArray(data)) return data;
+      if (data && Array.isArray((data as { items?: unknown[] }).items)) return (data as { items: unknown[] }).items;
+      if (data && Array.isArray((data as { data?: unknown[] }).data)) return (data as { data: unknown[] }).data;
+    } catch {
+      // try next
+    }
+  }
+  return [];
 }
 
 async function fetchPlannedSubsidiaryCustom(
@@ -240,7 +317,7 @@ async function fetchPlannedSubsidiaryCustom(
   const headers = getAuthHeaders(settings);
   for (const cand of candidates) {
     try {
-      return await requestJson(cand, { headers });
+      return await requestJson(cand, { headers }, 15000);
     } catch {
       // try next
     }
@@ -272,16 +349,7 @@ function extractPlannedInfo(raw: unknown, contractId: string, dayKey: string): P
           (day.summary as string) ||
           (day.plan as string) ||
           "";
-        const location =
-          (day.subsidiary_name as string) ||
-          (day.location as string) ||
-          (day.site_name as string) ||
-          (day.site as string) ||
-          (day.location_name as string) ||
-          (day.workplace as string) ||
-          (day.place as string) ||
-          (day.location_description as string) ||
-          "";
+        const location = pickLocationName(day as Record<string, unknown>);
         const plannedTrim = String(planned || "").trim();
         const locationTrim = String(location || "").trim();
         if (plannedTrim || locationTrim) {
@@ -331,17 +399,128 @@ function extractPlannedInfo(raw: unknown, contractId: string, dayKey: string): P
   return null;
 }
 
+function extractPlannedInfoWithSubsidiaries(
+  raw: unknown,
+  contractId: string,
+  dayKey: string,
+  subsidiaryNameMap: Map<string, string>,
+  userId?: string | null
+): PlannedInfo | null {
+  const items = Array.isArray(raw) ? raw : (raw as { data?: unknown }).data ?? (raw as { items?: unknown }).items ?? raw;
+  if (!Array.isArray(items)) return null;
+
+  for (const c of items as Array<Record<string, unknown>>) {
+    const cContractId =
+      (c.contract_id as string) || (c.contractId as string) || (c.contract as string) || "";
+    const cUserId = (c.user_id as string) || (c.userId as string) || "";
+    const matchesContract = cContractId && cContractId === contractId;
+    const matchesUser = !!userId && !!cUserId && cUserId === userId;
+    if (cContractId && !matchesContract) {
+      if (!matchesUser) continue;
+    } else if (!cContractId && !matchesUser && userId) {
+      continue;
+    }
+
+    const days = Array.isArray(c.days) ? (c.days as Array<Record<string, unknown>>) : [];
+    const dayFromItem = (c.day as string) || (c.date as string) || "";
+
+    if (days.length > 0 && cContractId) {
+      for (const d of days) {
+        const dayVal = (d.day as string) || (d.date as string) || dayKey;
+        if (dayVal && dayVal !== dayKey) continue;
+        const planned =
+          (d.plan_name as string) ||
+          (d.shift_name as string) ||
+          (d.planned_name as string) ||
+          (d.schedule as string) ||
+          (d.type as string) ||
+          (d.notes as string) ||
+          (d.summary as string) ||
+          (d.plan as string) ||
+          "";
+        let location = pickLocationName(d);
+        const subId = (d.subsidiary_id as string) || "";
+        if ((!location || location.toLowerCase() === "subsidiary") && subId && subsidiaryNameMap.has(subId)) {
+          location = subsidiaryNameMap.get(subId) || "";
+        }
+        const plannedTrim = String(planned || "").trim();
+        const locationTrim = String(location || "").trim();
+        if (plannedTrim || locationTrim) {
+          return { shift: plannedTrim, location: locationTrim };
+        }
+      }
+    } else if (dayFromItem) {
+      if (dayFromItem && dayFromItem !== dayKey) continue;
+      const planned =
+        (c.overrided_shift_name as string) ||
+        (c.shift_name as string) ||
+        (c.shift as string) ||
+        (c.schedule as string) ||
+        (c.type as string) ||
+        "";
+
+      const subsidiaryIds = Array.isArray(c.subsidiary_ids)
+        ? (c.subsidiary_ids as Array<string>)
+        : [];
+      const flexibleSchedule = Array.isArray(c.flexible_schedule)
+        ? (c.flexible_schedule as Array<Record<string, unknown>>)
+        : [];
+      const actualCalendar = Array.isArray(c.actual_calendar)
+        ? (c.actual_calendar as Array<Record<string, unknown>>)
+        : [];
+      const schedule = Array.isArray(c.schedule)
+        ? (c.schedule as Array<Record<string, unknown>>)
+        : [];
+
+      const flexWorkplace = flexibleSchedule[0] as Record<string, unknown> | undefined;
+      const actualWorkplace = actualCalendar[0] as Record<string, unknown> | undefined;
+      const scheduleWorkplace = schedule[0] as Record<string, unknown> | undefined;
+
+      const subId =
+        (c.subsidiary_id as string) ||
+        subsidiaryIds[0] ||
+        (flexWorkplace?.workplace as Record<string, unknown> | undefined)?.id ||
+        (actualWorkplace?.workplace as Record<string, unknown> | undefined)?.id ||
+        (scheduleWorkplace?.workplace as Record<string, unknown> | undefined)?.id ||
+        (actualWorkplace?.subsidiary_id as string) ||
+        "";
+
+      let location =
+        (c.subsidiary_name as string) ||
+        (flexWorkplace?.workplace as Record<string, unknown> | undefined)?.label ||
+        (actualWorkplace?.workplace as Record<string, unknown> | undefined)?.label ||
+        (scheduleWorkplace?.workplace as Record<string, unknown> | undefined)?.label ||
+        "";
+      if ((!location || location.toLowerCase() === "subsidiary") && subId && subsidiaryNameMap.has(subId)) {
+        location = subsidiaryNameMap.get(subId) || "";
+      }
+
+      const plannedTrim = String(planned || "").trim();
+      const locationTrim = String(location || "").trim();
+      if (plannedTrim || locationTrim) {
+        return { shift: plannedTrim, location: locationTrim };
+      }
+    }
+  }
+  return null;
+}
+
 async function loadFluidaSettings(organizationId: string): Promise<FluidaSettings | null> {
   const settings = await prisma.fluidaIntegrationSettings.findUnique({
     where: { organizationId },
   });
   if (!settings) return null;
 
-  const secrets = decryptJson({
-    ciphertext: settings.encryptedData,
-    iv: settings.iv,
-    authTag: settings.authTag,
-  }) as FluidaSecrets;
+  let secrets: FluidaSecrets = {};
+  try {
+    secrets = decryptJson({
+      ciphertext: settings.encryptedData,
+      iv: settings.iv,
+      authTag: settings.authTag,
+    }) as FluidaSecrets;
+  } catch {
+    secrets = {};
+  }
 
   const authMethod = settings.authMethod === "oauth" ? "oauth" : "apikey";
 
@@ -352,6 +531,22 @@ async function loadFluidaSettings(organizationId: string): Promise<FluidaSetting
     companyId: settings.companyId,
     secrets,
   };
+}
+
+function loadFluidaSettingsFromEnv(): FluidaSettings | null {
+  const apiUrl = process.env.FLUIDA_API_URL;
+  if (!apiUrl) return null;
+  const authMethod = (process.env.FLUIDA_AUTH_METHOD || "apikey").toLowerCase() === "oauth" ? "oauth" : "apikey";
+  const apiKeyHeader = process.env.FLUIDA_API_KEY_HEADER_NAME || "x-fluida-app-uuid";
+  const companyId = process.env.FLUIDA_COMPANY_ID ?? null;
+  const secrets: FluidaSecrets = {};
+  if (authMethod === "apikey" && process.env.FLUIDA_API_KEY) {
+    secrets.apiKey = process.env.FLUIDA_API_KEY;
+  }
+  if (authMethod === "oauth" && process.env.FLUIDA_OAUTH_TOKEN) {
+    secrets.oauthToken = process.env.FLUIDA_OAUTH_TOKEN;
+  }
+  return { apiUrl, authMethod, apiKeyHeader, companyId, secrets };
 }
 
 function normalizeStamping(raw: FluidaStamping, companyId: string | null) {
@@ -590,6 +785,7 @@ async function rebuildDaySummary(params: {
   settings?: FluidaSettings | null;
 }) {
   const { organizationId, companyId, contractId, dayKey, settings } = params;
+  const plannedErrors: PlannedSyncError[] = [];
   const dayStart = startOfDay(new Date(`${dayKey}T00:00:00Z`));
   const dayEnd = endOfDay(new Date(`${dayKey}T00:00:00Z`));
 
@@ -617,31 +813,120 @@ async function rebuildDaySummary(params: {
   }
 
   let planned: PlannedInfo | null = null;
+  const userId = stampings.find((item) => item.userId)?.userId ?? null;
+  // Try with explicit settings first.
   if (settings) {
-    const cal = await fetchCalendarSummaryCustom(settings, dayKey);
-    planned = extractPlannedInfo(cal, contractId, dayKey);
-    if ((!planned || !planned.location) && stampings.length > 0) {
-      const first = stampings[0];
-      const time = first.stampingAt.toISOString().slice(11, 19);
-      const direction = (first.direction || "IN").toUpperCase();
-      const ps = await fetchPlannedSubsidiaryCustom(settings, contractId, dayKey, time, direction);
-      if (ps) {
-        const psAny = ps as Record<string, unknown>;
-        let loc = "";
-        if (psAny.subsidiary_name) loc = String(psAny.subsidiary_name);
-        else if (psAny.name) loc = String(psAny.name);
-        else if (psAny.subsidiary && (psAny.subsidiary as Record<string, unknown>).name) {
-          loc = String((psAny.subsidiary as Record<string, unknown>).name);
-        } else if (psAny.subsidiary && (psAny.subsidiary as Record<string, unknown>).label) {
-          loc = String((psAny.subsidiary as Record<string, unknown>).label);
+    try {
+      const [cal, subsidiaries] = await Promise.all([
+        fetchCalendarSummaryCustom(settings, dayKey),
+        fetchSubsidiariesCustom(settings),
+      ]);
+      const subsidiaryNameMap = new Map<string, string>();
+      if (Array.isArray(subsidiaries)) {
+        for (const it of subsidiaries as Array<Record<string, unknown>>) {
+          const id = (it.id as string) || (it.subsidiary_id as string) || "";
+          if (!id) continue;
+          const name = pickName(it) || (it.subsidiary_name as string) || "";
+          if (name) subsidiaryNameMap.set(id, name);
         }
-        const shift = String((psAny.shift_name as string) || (psAny.shift as string) || "").trim();
-        planned = {
-          shift: shift || planned?.shift || "",
-          location: String(loc || "").trim() || planned?.location || "",
-        };
+      }
+      planned = extractPlannedInfoWithSubsidiaries(cal, contractId, dayKey, subsidiaryNameMap, userId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "calendar error";
+      plannedErrors.push({ contractId, dayKey, stage: "calendar", message });
+    }
+    if ((!planned || !planned.location) && stampings.length > 0) {
+      try {
+        const first = stampings[0];
+        const time = first.stampingAt.toISOString().slice(11, 19);
+        const direction = (first.direction || "IN").toUpperCase();
+        const ps = await fetchPlannedSubsidiaryCustom(settings, contractId, dayKey, time, direction);
+        if (ps) {
+          const psAny = ps as Record<string, unknown>;
+          let loc = "";
+          if (psAny.subsidiary_name) loc = String(psAny.subsidiary_name);
+          else if (psAny.name) loc = String(psAny.name);
+          else if (psAny.subsidiary && (psAny.subsidiary as Record<string, unknown>).name) {
+            loc = String((psAny.subsidiary as Record<string, unknown>).name);
+          } else if (psAny.subsidiary && (psAny.subsidiary as Record<string, unknown>).label) {
+            loc = String((psAny.subsidiary as Record<string, unknown>).label);
+          }
+          const shift = String((psAny.shift_name as string) || (psAny.shift as string) || "").trim();
+          planned = {
+            shift: shift || planned?.shift || "",
+            location: String(loc || "").trim() || planned?.location || "",
+          };
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "planned_subsidiary error";
+        plannedErrors.push({ contractId, dayKey, stage: "planned_subsidiary", message });
       }
     }
+  }
+
+  // Fallback to env-based fluida client if still missing.
+  if (!planned || (!planned.shift && !planned.location)) {
+    try {
+      const [cal, subsidiaries] = await Promise.all([
+        fetchCalendarSummary({ date: dayKey }),
+        fetchSubsidiaries({ page_size: 200 }),
+      ]);
+      const subsidiaryNameMap = new Map<string, string>();
+      if (Array.isArray(subsidiaries)) {
+        for (const it of subsidiaries as Array<Record<string, unknown>>) {
+          const id = (it.id as string) || (it.subsidiary_id as string) || "";
+          if (!id) continue;
+          const name = pickName(it) || (it.subsidiary_name as string) || "";
+          if (name) subsidiaryNameMap.set(id, name);
+        }
+      }
+      planned =
+        extractPlannedInfoWithSubsidiaries(cal, contractId, dayKey, subsidiaryNameMap, userId) || planned;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "calendar error";
+      plannedErrors.push({ contractId, dayKey, stage: "calendar", message });
+    }
+    if ((!planned || !planned.location) && stampings.length > 0) {
+      try {
+        const first = stampings[0];
+        const time = first.stampingAt.toISOString().slice(11, 19);
+        const direction = (first.direction || "IN").toUpperCase();
+        const ps = await fetchPlannedSubsidiary({
+          contract_id: contractId,
+          stamping_date: dayKey,
+          stamping_time: time,
+          direction,
+        });
+        if (ps) {
+          const psAny = ps as Record<string, unknown>;
+          let loc = "";
+          if (psAny.subsidiary_name) loc = String(psAny.subsidiary_name);
+          else if (psAny.name) loc = String(psAny.name);
+          else if (psAny.subsidiary && (psAny.subsidiary as Record<string, unknown>).name) {
+            loc = String((psAny.subsidiary as Record<string, unknown>).name);
+          } else if (psAny.subsidiary && (psAny.subsidiary as Record<string, unknown>).label) {
+            loc = String((psAny.subsidiary as Record<string, unknown>).label);
+          }
+          const shift = String((psAny.shift_name as string) || (psAny.shift as string) || "").trim();
+          planned = {
+            shift: shift || planned?.shift || "",
+            location: String(loc || "").trim() || planned?.location || "",
+          };
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "planned_subsidiary error";
+        plannedErrors.push({ contractId, dayKey, stage: "planned_subsidiary", message });
+      }
+    }
+  }
+
+  if (!planned || (!planned.shift && !planned.location)) {
+    plannedErrors.push({
+      contractId,
+      dayKey,
+      stage: "empty",
+      message: "planned shift/location not found",
+    });
   }
 
   const summary = await prisma.stampingDaySummary.upsert({
@@ -682,6 +967,8 @@ async function rebuildDaySummary(params: {
       dayKey,
     },
   });
+
+  return { plannedErrors };
 }
 
 export async function runFluidaSync(params: {
@@ -690,8 +977,10 @@ export async function runFluidaSync(params: {
   windowDays?: number | null;
 }) : Promise<SyncRunResult> {
   const { organizationId, triggeredBy } = params;
-  const settings = await loadFluidaSettings(organizationId);
-  const companyId = settings?.companyId ?? process.env.FLUIDA_COMPANY_ID ?? null;
+  const dbSettings = await loadFluidaSettings(organizationId);
+  const envSettings = loadFluidaSettingsFromEnv();
+  const settings = dbSettings ?? envSettings;
+  const companyId = settings?.companyId ?? null;
 
   const existingState = await prisma.stampingSyncState.findUnique({
     where: { organizationId },
@@ -717,6 +1006,19 @@ export async function runFluidaSync(params: {
     },
   });
 
+  await prisma.stampingSyncLog.updateMany({
+    where: {
+      organizationId,
+      status: "running",
+      startedAt: { lt: new Date(Date.now() - 10 * 60 * 1000) },
+    },
+    data: {
+      status: "failed",
+      finishedAt: new Date(),
+      errors: { message: "Sync timeout: previous run did not finish." },
+    },
+  });
+
   const log = await prisma.stampingSyncLog.create({
     data: {
       organizationId,
@@ -738,6 +1040,10 @@ export async function runFluidaSync(params: {
           to_date: toIsoDate(rangeTo),
         })) as FluidaStamping[]);
 
+    if (!settings) {
+      throw new Error("Fluida settings missing: configure in Sync Settings or env vars.");
+    }
+
     const upsertResult = await upsertStampings({
       organizationId,
       companyId: state.companyId,
@@ -745,14 +1051,38 @@ export async function runFluidaSync(params: {
       triggeredBy,
     });
 
+    const plannedErrors: PlannedSyncError[] = [];
+    const rebuildMap = new Map<string, DayKey>();
     for (const day of upsertResult.dirtyDays) {
-      await rebuildDaySummary({
+      rebuildMap.set(`${day.contractId}:${day.dayKey}`, day);
+    }
+    const allDays = await prisma.stamping.findMany({
+      where: {
+        organizationId,
+        contractId: { not: null },
+        stampingAt: { gte: rangeFrom, lte: rangeTo },
+      },
+      select: { contractId: true, dayKey: true },
+      distinct: ["contractId", "dayKey"],
+    });
+    for (const row of allDays) {
+      if (!row.contractId || !row.dayKey) continue;
+      const key = `${row.contractId}:${row.dayKey}`;
+      if (!rebuildMap.has(key)) {
+        rebuildMap.set(key, { contractId: row.contractId, dayKey: row.dayKey });
+      }
+    }
+    for (const day of rebuildMap.values()) {
+      const result = await rebuildDaySummary({
         organizationId,
         companyId: state.companyId,
         contractId: day.contractId,
         dayKey: day.dayKey,
         settings: settings ?? undefined,
       });
+      if (result?.plannedErrors?.length) {
+        plannedErrors.push(...result.plannedErrors);
+      }
     }
 
     const stats: SyncStats = {
@@ -772,6 +1102,7 @@ export async function runFluidaSync(params: {
         recordsInserted: stats.inserted,
         recordsUpdated: stats.updated,
         recordsSkipped: stats.skipped,
+        errors: plannedErrors.length ? { plannedErrors } : undefined,
       },
     });
 

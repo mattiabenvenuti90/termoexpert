@@ -51,6 +51,12 @@ model Organization {
   settings     Json?
   memberships  OrganizationMembership[]
   roles        Role[]
+  stampings             Stamping[]
+  stampingDaySummaries  StampingDaySummary[]
+  stampingChangeLogs    StampingChangeLog[]
+  stampingSyncStates    StampingSyncState[]
+  stampingSyncLogs      StampingSyncLog[]
+  fluidaSettings        FluidaIntegrationSettings?
   createdAt    DateTime                  @default(now())
   updatedAt    DateTime                  @updatedAt
 }

@@ -6,6 +6,7 @@ import {
   listFluidaSyncLogs,
   runFluidaSync,
 } from "@/modules/fluida-sync/server/sync";
+import { prisma } from "@/lib/prisma";
 
 export async function GET(request: NextRequest) {
   const auth = await requireUser(request);
@@ -13,6 +14,19 @@ export async function GET(request: NextRequest) {
 
   const org = await requireOrganization(request, auth.userId);
   if (!org.ok) return org.response;
+
+  await prisma.stampingSyncLog.updateMany({
+    where: {
+      organizationId: org.organizationId,
+      status: "running",
+      startedAt: { lt: new Date(Date.now() - 15 * 60 * 1000) },
+    },
+    data: {
+      status: "failed",
+      finishedAt: new Date(),
+      errors: { message: "Sync timeout: marked as failed by status check." },
+    },
+  });
 
   const limitRaw = request.nextUrl.searchParams.get("limit");
   const limit = limitRaw ? Number(limitRaw) : 20;
