@@ -27,8 +27,84 @@ function formatDeviceType(value?: string) {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return "";
   if (raw === "gps") return "GPS";
+  if (raw === "bt" || raw === "ble" || raw === "bluetooth") return "Bluetooth";
+  if (raw === "forzata") return "Forzata";
   if (raw === "manual") return "Manuale";
+  if (raw === "remote" || raw === "app" || raw === "mobile") return "Remoto";
   return raw.toUpperCase();
+}
+
+function formatClockType(value?: string) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw === "manual") return "Manuale";
+  if (raw === "remote") return "Remoto";
+  if (raw === "clock") return "Clock";
+  return raw.toUpperCase();
+}
+
+function getValidationLabel(clockType?: string, deviceType?: string) {
+  const clock = String(clockType || "").trim().toLowerCase();
+  const device = String(deviceType || "").trim().toLowerCase();
+  if (clock === "manual") return "Manuale";
+  if (clock === "remote" && !device) return "Forzata";
+  return formatDeviceType(device);
+}
+
+function SatelliteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="device-icon" aria-hidden="true">
+      <path
+        d="M14.5 4.5c2.2-1.2 4.2-1.6 5-0.8.8.8.4 2.8-.8 5l-3 3-4.2-4.2 3-3Z"
+        fill="currentColor"
+      />
+      <path
+        d="M9.6 8.4 4.5 9.5l2 2-3.5 3.5 1.5 1.5L8 13l2 2 1.1-5.1-1.5-1.5Z"
+        fill="currentColor"
+      />
+      <path
+        d="M16 12.5 11.5 17l2 2 4.5-4.5"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function BluetoothIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="device-icon" aria-hidden="true">
+      <path
+        d="M12 3v7.2L8.6 6.8 7 8.4l4.1 4.1L7 16.6l1.6 1.6L12 14.8V22l5-5-3-3 3-3-5-5Zm2.2 4.6 1.4 1.4-1.4 1.4V7.6Zm0 6 1.4 1.4-1.4 1.4v-2.8Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function renderValidationBadge(clockType?: string, deviceType?: string) {
+  const label = getValidationLabel(clockType, deviceType);
+  if (!label) return null;
+  const device = String(deviceType || "").trim().toLowerCase();
+  const isManual = String(clockType || "").trim().toLowerCase() === "manual";
+  return (
+    <span className={`device-badge ${isManual ? "device-badge-manual" : ""}`}>
+      {device === "gps" ? <SatelliteIcon /> : null}
+      {device === "bt" || device === "ble" || device === "bluetooth" ? <BluetoothIcon /> : null}
+      {isManual ? <ManualIcon /> : null}
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function ManualIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="device-icon device-icon-manual" aria-hidden="true">
+      <path
+        d="M12 2.5a9.5 9.5 0 1 0 9.5 9.5A9.5 9.5 0 0 0 12 2.5Zm0 3a6.5 6.5 0 1 1-6.5 6.5A6.5 6.5 0 0 1 12 5.5Zm0 2a1.1 1.1 0 0 0-1.1 1.1v3.2l-2.2 2.2a1.1 1.1 0 0 0 1.6 1.6l2.5-2.5a1.1 1.1 0 0 0 .3-.8V8.6A1.1 1.1 0 0 0 12 7.5Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
 }
 
 function formatDateTime(value?: string | null) {
@@ -465,12 +541,21 @@ export default function DailyPage() {
                     const r = row.original as Record<string, unknown>;
                     const time = r.entryTimeDisplay ? String(r.entryTimeDisplay) : "--";
                     const loc = r.entryLocation ? String(r.entryLocation) : "";
-                    const device = formatDeviceType(r.entryDeviceType as string);
+                    const rawClockType = String(r.entryClockType || "");
+                    const clockType = formatClockType(rawClockType);
+                    const deviceType =
+                      (r.entryStampingDeviceType as string) || (r.entryDeviceType as string) || "";
+                    const validation = renderValidationBadge(rawClockType, deviceType);
                     return (
                       <div>
                         <div>{time}</div>
                         {loc ? <div className="muted">{loc}</div> : null}
-                        {device ? <div className="muted">Tipo: {device}</div> : null}
+                        {clockType || validation ? (
+                          <div className="meta-row">
+                            {clockType ? <span className="muted">Tipo: {clockType}</span> : null}
+                            {validation ? <span>{validation}</span> : null}
+                          </div>
+                        ) : null}
                       </div>
                     );
                   },
@@ -482,12 +567,21 @@ export default function DailyPage() {
                     const r = row.original as Record<string, unknown>;
                     const time = r.exitTimeDisplay ? String(r.exitTimeDisplay) : "--";
                     const loc = r.exitLocation ? String(r.exitLocation) : "";
-                    const device = formatDeviceType(r.exitDeviceType as string);
+                    const rawClockType = String(r.exitClockType || "");
+                    const clockType = formatClockType(rawClockType);
+                    const deviceType =
+                      (r.exitStampingDeviceType as string) || (r.exitDeviceType as string) || "";
+                    const validation = renderValidationBadge(rawClockType, deviceType);
                     return (
                       <div>
                         <div>{time}</div>
                         {loc ? <div className="muted">{loc}</div> : null}
-                        {device ? <div className="muted">Tipo: {device}</div> : null}
+                        {clockType || validation ? (
+                          <div className="meta-row">
+                            {clockType ? <span className="muted">Tipo: {clockType}</span> : null}
+                            {validation ? <span>{validation}</span> : null}
+                          </div>
+                        ) : null}
                       </div>
                     );
                   },

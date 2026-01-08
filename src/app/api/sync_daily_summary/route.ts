@@ -33,6 +33,43 @@ function pickLocationName(obj: Record<string, unknown> | null | undefined) {
   );
 }
 
+function resolveDeviceType(
+  raw: Record<string, unknown> | null | undefined,
+  fallback?: string
+) {
+  const clockType = String(raw?.clock_type || "").trim().toLowerCase();
+  const deviceType = String(raw?.stamping_device_type || "").trim().toLowerCase();
+  if (clockType === "remote") {
+    return deviceType ? `remote:${deviceType}` : "forzata";
+  }
+  if (deviceType) return deviceType;
+  if (fallback) return fallback;
+  return clockType || "";
+}
+
+function readClockType(
+  raw: Record<string, unknown> | null | undefined,
+  fallback?: string
+) {
+  const fromRaw = String(raw?.clock_type || "").trim().toLowerCase();
+  if (fromRaw) return fromRaw;
+  const fb = String(fallback || "").trim().toLowerCase();
+  if (fb === "manual" || fb === "remote" || fb === "clock") return fb;
+  return "";
+}
+
+function readStampingDeviceType(
+  raw: Record<string, unknown> | null | undefined,
+  fallback?: string
+) {
+  const fromRaw = String(raw?.stamping_device_type || "").trim().toLowerCase();
+  if (fromRaw) return fromRaw;
+  const fb = String(fallback || "").trim().toLowerCase();
+  if (!fb) return "";
+  if (fb === "remote" || fb === "manual" || fb === "clock") return "";
+  return fb;
+}
+
 function extractPlannedInfoWithSubsidiaries(
   raw: unknown,
   contractId: string,
@@ -221,6 +258,10 @@ export async function GET(request: NextRequest) {
       let exitTime = "";
       let entryDeviceType = "";
       let exitDeviceType = "";
+      let entryClockType = "";
+      let exitClockType = "";
+      let entryStampingDeviceType = "";
+      let exitStampingDeviceType = "";
       let personName = "";
 
       for (const r of summary.stampings) {
@@ -239,12 +280,16 @@ export async function GET(request: NextRequest) {
         if (direction === "IN" && !entryTime) {
           entryLocation = loc;
           entryTime = r.stampingAt.toISOString().slice(11, 19);
-          entryDeviceType = String(r.deviceType || "");
+          entryDeviceType = resolveDeviceType(raw, String(r.deviceType || ""));
+          entryClockType = readClockType(raw, String(r.deviceType || ""));
+          entryStampingDeviceType = readStampingDeviceType(raw, String(r.deviceType || ""));
         }
         if (direction === "OUT") {
           exitLocation = loc;
           exitTime = r.stampingAt.toISOString().slice(11, 19);
-          exitDeviceType = String(r.deviceType || "");
+          exitDeviceType = resolveDeviceType(raw, String(r.deviceType || ""));
+          exitClockType = readClockType(raw, String(r.deviceType || ""));
+          exitStampingDeviceType = readStampingDeviceType(raw, String(r.deviceType || ""));
         }
 
         if (!personName && raw) {
@@ -282,9 +327,13 @@ export async function GET(request: NextRequest) {
         entryLocation,
         entryTime,
         entryDeviceType,
+        entryClockType,
+        entryStampingDeviceType,
         exitLocation,
         exitTime,
         exitDeviceType,
+        exitClockType,
+        exitStampingDeviceType,
         plannedShift: summary.plannedShift ?? "",
         plannedLocation: summary.plannedLocation ?? "",
       };

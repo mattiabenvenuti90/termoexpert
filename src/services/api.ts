@@ -18,9 +18,13 @@ export type DailyItem = {
   entryLocation?: string;
   entryTime?: string;
   entryDeviceType?: string;
+  entryClockType?: string;
+  entryStampingDeviceType?: string;
   exitLocation?: string;
   exitTime?: string;
   exitDeviceType?: string;
+  exitClockType?: string;
+  exitStampingDeviceType?: string;
   plannedShift?: string;
   plannedLocation?: string;
   [key: string]: unknown;

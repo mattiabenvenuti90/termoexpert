@@ -76,6 +76,11 @@ type PlannedSyncError = {
   message: string;
 };
 
+type DeviceInfo = {
+  deviceType?: string | null;
+  clockType?: string | null;
+};
+
 function toIsoDate(date: Date) {
   return date.toISOString().slice(0, 10);
 }
@@ -567,7 +572,7 @@ function normalizeStamping(raw: FluidaStamping, companyId: string | null) {
   const userId = pickFirstString(raw, ["user_id", "userId", "user"]);
   const direction = pickFirstString(raw, ["direction", "clock_type", "type"]);
   const deviceId = pickFirstString(raw, ["device_id", "deviceId", "clock_id"]);
-  const deviceType = pickFirstString(raw, ["stamping_device_type", "device_type"]);
+  const deviceType = pickFirstString(raw, ["stamping_device_type", "device_type", "clock_type"]);
   const subsidiaryId = pickFirstString(raw, ["subsidiary_id", "subsidiaryId", "workplace_id"]);
   const note = pickFirstString(raw, ["note", "notes"]);
 
@@ -587,6 +592,59 @@ function normalizeStamping(raw: FluidaStamping, companyId: string | null) {
     note,
     raw,
   };
+}
+
+function normalizeStampingWithDeviceInfo(
+  raw: FluidaStamping,
+  companyId: string | null,
+  deviceInfo?: DeviceInfo
+) {
+  if (!deviceInfo) return normalizeStamping(raw, companyId);
+  const augmented = {
+    ...raw,
+    stamping_device_type:
+      deviceInfo.deviceType ?? (raw as Record<string, unknown>).stamping_device_type,
+    clock_type: deviceInfo.clockType ?? (raw as Record<string, unknown>).clock_type,
+  } as FluidaStamping;
+  return normalizeStamping(augmented, companyId);
+}
+
+function buildDeviceInfoMap(raw: unknown) {
+  const map = new Map<string, DeviceInfo>();
+  const items = Array.isArray(raw)
+    ? raw
+    : (raw as { data?: unknown }).data ?? (raw as { items?: unknown }).items ?? raw;
+  if (!Array.isArray(items)) return map;
+
+  for (const entry of items as Array<Record<string, unknown>>) {
+    const days = Array.isArray(entry.days) ? (entry.days as Array<Record<string, unknown>>) : [];
+    for (const day of days) {
+      const records = Array.isArray(day.clock_records)
+        ? (day.clock_records as Array<Record<string, unknown>>)
+        : [];
+      for (const record of records) {
+        const id = asString(record.id);
+        if (!id) continue;
+        const deviceType = asString(record.stamping_device_type);
+        const clockType = asString(record.clock_type);
+        map.set(id, { deviceType, clockType });
+      }
+    }
+  }
+  return map;
+}
+
+async function fetchDailyClockRecordsCustom(
+  settings: FluidaSettings,
+  fromDate: string,
+  toDate: string
+) {
+  if (!settings.companyId) throw new Error("Fluida company id missing");
+  const base = baseFromApiUrl(settings.apiUrl);
+  const headers = getAuthHeaders(settings);
+  const url = `${base}/api/v1/stampings/${settings.companyId}/daily_clock_records`;
+  const qs = new URLSearchParams({ from_date: fromDate, to_date: toDate }).toString();
+  return requestJson(`${url}?${qs}`, { headers }, 30000);
 }
 
 function buildSnapshot(data: {
@@ -645,15 +703,18 @@ async function upsertStampings(params: {
   companyId: string | null;
   items: FluidaStamping[];
   triggeredBy: string;
+  deviceInfoMap?: Map<string, DeviceInfo>;
 }) {
-  const { organizationId, companyId, items, triggeredBy } = params;
+  const { organizationId, companyId, items, triggeredBy, deviceInfoMap } = params;
   const dirtyDays = new Map<string, DayKey>();
   let inserted = 0;
   let updated = 0;
   let skipped = 0;
 
   for (const item of items) {
-    const normalized = normalizeStamping(item, companyId);
+    const fluidaId = pickFirstString(item, ["id", "stamping_id", "stampingId", "uuid", "_id"]);
+    const deviceInfo = fluidaId ? deviceInfoMap?.get(fluidaId) : undefined;
+    const normalized = normalizeStampingWithDeviceInfo(item, companyId, deviceInfo);
     if (!normalized) {
       skipped += 1;
       continue;
@@ -1044,11 +1105,24 @@ export async function runFluidaSync(params: {
       throw new Error("Fluida settings missing: configure in Sync Settings or env vars.");
     }
 
+    let deviceInfoMap: Map<string, DeviceInfo> | undefined;
+    try {
+      const daily = await fetchDailyClockRecordsCustom(
+        settings,
+        toIsoDate(rangeFrom),
+        toIsoDate(rangeTo)
+      );
+      deviceInfoMap = buildDeviceInfoMap(daily);
+    } catch {
+      deviceInfoMap = undefined;
+    }
+
     const upsertResult = await upsertStampings({
       organizationId,
       companyId: state.companyId,
       items,
       triggeredBy,
+      deviceInfoMap,
     });
 
     const plannedErrors: PlannedSyncError[] = [];
